@@ -19,16 +19,16 @@ DBD += motorSim.dbd
 motorSim_DBD += base.dbd
 
 # Include dbd files from all support applications:
-#ifdef ASYN
+ifdef ASYN
 motorSim_DBD += asyn.dbd
-#endif
+endif
 
-#ifdef AUTOSAVE
+ifdef AUTOSAVE
 motorSim_DBD += asSupport.dbd
-#endif
-#ifdef DEVIOCSTATS
+endif
+ifdef DEVIOCSTATS
 motorSim_DBD += devIocStats.dbd
-#endif
+endif
 
 motorSim_DBD += motorSupport.dbd
 motorSim_DBD += motorSimSupport.dbd
@@ -37,18 +37,18 @@ motorSim_DBD += motorSimSupport.dbd
 motorSim_LIBS += motorSimSupport
 motorSim_LIBS += motor
 
-#ifdef ASYN
+ifdef ASYN
 motorSim_LIBS += asyn
-#endif
-#ifdef SNCSEQ
+endif
+ifdef SNCSEQ
 motorSim_LIBS += seq pv
-#endif
-#ifdef AUTOSAVE
+endif
+ifdef AUTOSAVE
 motorSim_LIBS += autosave
-#endif
-#ifdef DEVIOCSTATS
+endif
+ifdef DEVIOCSTATS
 motorSim_LIBS += devIocStats
-#endif
+endif
 
 
 
