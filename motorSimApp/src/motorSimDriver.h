@@ -31,6 +31,10 @@ public:
   asynStatus stop(double acceleration);
   asynStatus poll(bool *moving);
   asynStatus setPosition(double position);
+  asynStatus setEncoderPosition(double position);
+  asynStatus setHighLimit(double highLimit);
+  asynStatus setLowLimit(double lowLimit);
+
 
   /* These are the methods that are new to this class */
   asynStatus config(int hiHardLimit, int lowHardLimit, int home, int start);
@@ -56,6 +60,7 @@ private:
   double lastTimeSecs_;
   int delayedDone_;
   int lastDone_;
+  epicsTimeStamp tStart_;
   
 friend class motorSimController;
 };

@@ -14,6 +14,7 @@ December 13, 2009
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <iostream>
 
 #include <epicsTime.h>
 #include <epicsThread.h>
@@ -69,6 +70,9 @@ motorSimAxis::motorSimAxis(motorSimController *pController, int axis, double low
   route_ = routeNew( &(this->endpoint_), &pars );
   deferred_move_ = 0;
   delayedDone_ = 0;
+  lastDone_ = 1;
+  setIntegerParam(pC_->motorStatusHasEncoder_, 1);
+  epicsTimeGetCurrent(&tStart_);
 }
 
 
@@ -100,6 +104,7 @@ motorSimController::motorSimController(const char *portName, int numAxes, int pr
   for (axis=0; axis<numAxes; axis++) {
     new motorSimAxis(this, axis, DEFAULT_LOW_LIMIT, DEFAULT_HI_LIMIT, DEFAULT_HOME, DEFAULT_START);
     setDoubleParam(axis, this->motorPosition_, DEFAULT_START);
+	setDoubleParam(axis, this->motorPostMoveDelay_, 0.0);
   }
 
   this->motorThread_ = epicsThreadCreate("motorSimThread", 
@@ -274,13 +279,27 @@ void motorSimController::motorSimTask()
 asynStatus motorSimAxis::move(double position, int relative, double minVelocity, double maxVelocity, double acceleration)
 {
   route_pars_t pars;
+  double currentPos;
   static const char *functionName = "move";
+  pC_->getDoubleParam(axisNo_, pC_->motorPosition_, &currentPos);
+  if ( currentPos != (endpoint_.axis[0].p + enc_offset_) ) { // unsure if check is really needed
+      std::cerr << "motorSimAxis::move axis " << axisNo_ << " unsure of initial position: " << currentPos << " or " << endpoint_.axis[0].p + enc_offset_ << std::endl;
+  }
+  std::cerr << "motorSimAxis::move axis " << axisNo_ << " from " << currentPos << " to " << position << (relative ? " (relative)" : " (absolute)") << " speed min/max " << minVelocity << "/" << maxVelocity << " acceleration " << acceleration << std::endl;
 
   if (relative) position += endpoint_.axis[0].p + enc_offset_;
 
+  if (maxVelocity != 0.0) {
+      std::cerr << "motorSimAxis::move axis " << axisNo_ << " excluding acceleration/backlash this would take approximately " << fabs((position - currentPos) / maxVelocity) << " seconds" << std::endl;
+  }
+
   /* Check to see if in hard limits */
   if ((nextpoint_.axis[0].p >= hiHardLimit_  &&  position > nextpoint_.axis[0].p) ||
-    (nextpoint_.axis[0].p <= lowHardLimit_ &&  position < nextpoint_.axis[0].p)  ) return asynError;
+    (nextpoint_.axis[0].p <= lowHardLimit_ &&  position < nextpoint_.axis[0].p)  )
+  {
+      std::cerr << "motorSimAxis::move failed (hard limits)" << std::endl;
+      return asynError;
+  }
 
   if (pC_->movesDeferred_ == 0) { /*Normal move.*/
     endpoint_.axis[0].p = position - enc_offset_;
@@ -297,7 +316,6 @@ asynStatus motorSimAxis::move(double position, int relative, double minVelocity,
 
   setIntegerParam(pC_->motorStatusDone_, 0);
   callParamCallbacks();
-
   asynPrint(pasynUser_, ASYN_TRACE_FLOW, 
             "%s:%s: Set driver %s, axis %d move to %f, min vel=%f, maxVel=%f, accel=%f\n",
             driverName, functionName, pC_->portName, axisNo_, position, minVelocity, maxVelocity, acceleration );
@@ -324,6 +342,7 @@ asynStatus motorSimAxis::setVelocity(double velocity, double acceleration )
   this->endpoint_.axis[0].p = (this->nextpoint_.axis[0].p +
                               time * ( this->nextpoint_.axis[0].v + 0.5 * deltaV));
   this->reroute_ = ROUTE_NEW_ROUTE;
+  std::cerr << "motorSimAxis::setVelocity axis " << axisNo_ << " velocity " << velocity << " acceleration " << acceleration << std::endl;
   return asynSuccess;
 }
 
@@ -333,6 +352,7 @@ asynStatus motorSimAxis::home(double minVelocity, double maxVelocity, double acc
   asynStatus status = asynError;
   // static const char *functionName = "home";
 
+  std::cerr << "motorSimAxis::home axis " << axisNo_ << " direction " << (forwards ? "forwards" : "backwards") << std::endl;
   status = setVelocity((forwards? maxVelocity: -maxVelocity), acceleration );
   homing_ = 1;
   homed_ = 0;
@@ -343,6 +363,7 @@ asynStatus motorSimAxis::home(double minVelocity, double maxVelocity, double acc
 asynStatus motorSimAxis::moveVelocity(double minVelocity, double velocity, double acceleration )
 {
   asynStatus status = asynError;
+  std::cerr << "motorSimAxis::moveVelocity axis " << axisNo_ << " velocity " << velocity << " acceleration " << acceleration << std::endl;   
   // static const char *functionName = "moveVelocity";
 
   status = setVelocity(velocity, acceleration );
@@ -353,6 +374,7 @@ asynStatus motorSimAxis::stop(double acceleration )
 {
   // static const char *functionName = "moveVelocityAxis";
 
+  std::cerr << "motorSimAxis::stop axis " << axisNo_ << " acceleration " << acceleration << std::endl;   
   setVelocity(0.0, acceleration );
   deferred_move_ = 0;
   return asynSuccess;
@@ -360,8 +382,16 @@ asynStatus motorSimAxis::stop(double acceleration )
 
 asynStatus motorSimAxis::setPosition(double position)
 {
+  std::cerr << "motorSimAxis::setPosition axis " << axisNo_ << " position " << position << std::endl;
   enc_offset_ = position - nextpoint_.axis[0].p;
   return asynSuccess;
+}
+
+asynStatus motorSimAxis::setEncoderPosition(double position)
+{
+  std::cerr << "motorSimAxis::setEncoderPosition axis " << axisNo_ << " position " << position << std::endl;
+  // currently we do not track encoder separately but just keep in syn with motor
+  return asynMotorAxis::setEncoderPosition(position);
 }
 
 asynStatus motorSimAxis::config(int hiHardLimit, int lowHardLimit, int home, int start)
@@ -376,6 +406,24 @@ asynStatus motorSimAxis::config(int hiHardLimit, int lowHardLimit, int home, int
 
 asynStatus motorSimAxis::poll(bool *moving)
 {
+  return asynSuccess;
+}
+
+
+/** Set the high limit position of the motor.
+  * \param[in] highLimit The new high limit position that should be set in the hardware. Units=steps.*/
+asynStatus motorSimAxis::setHighLimit(double highLimit)
+{
+  hiHardLimit_ = highLimit;
+  return asynSuccess;
+}
+
+
+/** Set the low limit position of the motor.
+  * \param[in] lowLimit The new low limit position that should be set in the hardware. Units=steps.*/
+asynStatus motorSimAxis::setLowLimit(double lowLimit)
+{
+  lowHardLimit_ = lowLimit;
   return asynSuccess;
 }
 
@@ -415,14 +463,16 @@ void motorSimAxis::process(double delta )
     endpoint_.axis[0].p = home_;
     endpoint_.axis[0].v = 0.0;
   }
+  
+  route_pars_t pars;
+  routeGetParams(route_, &pars);
+  
   if ( nextpoint_.axis[0].p > hiHardLimit_ && nextpoint_.axis[0].v > 0 )
   {
     if (homing_) setVelocity(-endpoint_.axis[0].v, 0.0 );
     else
     {
-      reroute_ = ROUTE_NEW_ROUTE;
-      endpoint_.axis[0].p = hiHardLimit_;
-      endpoint_.axis[0].v = 0.0;
+	  stop(pars.axis[0].Amax);
     }
   }
   else if (nextpoint_.axis[0].p < lowHardLimit_ && nextpoint_.axis[0].v < 0)
@@ -430,9 +480,7 @@ void motorSimAxis::process(double delta )
     if (homing_) setVelocity(-endpoint_.axis[0].v, 0.0 );
     else
     {
-      reroute_ = ROUTE_NEW_ROUTE;
-      endpoint_.axis[0].p = lowHardLimit_;
-      endpoint_.axis[0].v = 0.0;
+	  stop(pars.axis[0].Amax);
     }
   }
 
@@ -464,10 +512,21 @@ void motorSimAxis::process(double delta )
     }
   }
 
+  double encRatio;
+  pC_->getDoubleParam(axisNo_, pC_->motorEncoderRatio_, &encRatio);
+  if (!lastDone_ && done) {
+      epicsTimeStamp tNow;
+      epicsTimeGetCurrent(&tNow);
+      std::cerr << "motorSimAxis::process axis " << axisNo_ << " has stopped moving after " << epicsTimeDiffInSeconds(&tNow, &tStart_) << " seconds: motor=" << nextpoint_.axis[0].p+enc_offset_ << " encoder=" << (nextpoint_.axis[0].p+enc_offset_) * encRatio << std::endl;
+  }
+  if (lastDone_ && !done) {
+      std::cerr << "motorSimAxis::process axis " << axisNo_ << " has started moving: motor=" << nextpoint_.axis[0].p+enc_offset_ << " encoder=" << (nextpoint_.axis[0].p+enc_offset_) * encRatio << std::endl;
+      epicsTimeGetCurrent(&tStart_);
+  }
   lastDone_ = done;
 
   setDoubleParam (pC_->motorPosition_,         (nextpoint_.axis[0].p+enc_offset_));
-  setDoubleParam (pC_->motorEncoderPosition_,  (nextpoint_.axis[0].p+enc_offset_));
+  setDoubleParam (pC_->motorEncoderPosition_,  (nextpoint_.axis[0].p+enc_offset_) * encRatio);
   setIntegerParam(pC_->motorStatusDirection_,  (nextpoint_.axis[0].v >  0));
   setIntegerParam(pC_->motorStatusDone_,       done);
   setIntegerParam(pC_->motorStatusHighLimit_,  (nextpoint_.axis[0].p >= hiHardLimit_));
@@ -525,7 +584,7 @@ static void motorSimCreateContollerCallFunc(const iocshArgBuf *args)
   motorSimCreateController(args[0].sval, args[1].ival, args[2].ival, args[3].ival);
 }
 
-static const iocshArg motorSimConfigAxisArg0 = { "Port name",     iocshArgString};
+static const iocshArg motorSimConfigAxisArg0 = { "Post name",     iocshArgString};
 static const iocshArg motorSimConfigAxisArg1 = { "Axis #",        iocshArgInt};
 static const iocshArg motorSimConfigAxisArg2 = { "High limit",    iocshArgInt};
 static const iocshArg motorSimConfigAxisArg3 = { "Low limit",     iocshArgInt};
